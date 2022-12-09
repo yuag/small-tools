@@ -49,7 +49,7 @@ def check_url(url):
     # 检查url判断200
     url = url.strip("\n")
     if ("http://" or "https://") not in url:
-        url = "http://" + url
+        url = "" + url
     try:
         print("[+] Testing %s" % url)
         r = requests.get(url, headers=get_headers(url), timeout=10)
@@ -100,10 +100,12 @@ def get_domainInfo(url):
 
 
 
-def put_file(result):  # 将结果写入result.txt中
-
+def put_file(result):  # 将结果写入result.txt中   
   with open('result.txt', 'a', encoding='utf-8') as f:
     f.writelines(result+"\n")
+
+
+
 
 
 
