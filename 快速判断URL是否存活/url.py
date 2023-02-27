@@ -45,11 +45,12 @@ def get_headers(url):  #
 
 
 
+        
 def check_url(url):
     # 检查url判断200
     url = url.strip("\n")
-    if ("http://" or "https://") not in url:
-        url = "" + url
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = "http://" + url
     try:
         print("[+] Testing %s" % url)
         r = requests.get(url, headers=get_headers(url), timeout=10)
@@ -58,8 +59,6 @@ def check_url(url):
             return url
     except:
         return None
-
-        
 
 
 
@@ -102,7 +101,7 @@ def get_domainInfo(url):
 
 
 
-#URL去重复
+
 visited_urls = []
 
 def get_domainInfo(url):
