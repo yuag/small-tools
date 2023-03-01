@@ -10,7 +10,8 @@ from bs4 import BeautifulSoup
 import os
 import threading
 import re
-requests.packages.urllib3.disable_warnings()
+from requests.packages import urllib3
+urllib3.disable_warnings() 
 
 count=0
 useragent_list = [
@@ -44,6 +45,19 @@ def get_headers(url):  #
 
 
 
+def check_url(url):
+    # 检查url判断200
+    url = url.strip("\n")
+    if ("http://" or "https://") not in url:
+        url = "" + url
+    try:
+        print("[+] Testing %s" % url)
+        r = requests.get(url, headers=get_headers(url), timeout=10, verify=False)
+        print(r.status_code)
+        if r.status_code == 200:
+            return url
+    except:
+        return None
 
         
 def check_url(url):
@@ -53,7 +67,7 @@ def check_url(url):
         url = "http://" + url
     try:
         print("[+] Testing %s" % url)
-        r = requests.get(url, headers=get_headers(url), timeout=10)
+        r = requests.get(url, headers=get_headers(url), timeout=10, verify=False)
         print(r.status_code)
         if r.status_code == 200:
             return url
@@ -63,8 +77,11 @@ def check_url(url):
 
 
 
-def get_pageTitle(response):
 
+
+
+
+def get_pageTitle(response):
     # 获取页面title
     try:
         # soup = BeautifulSoup(response.text, 'html.parser')
@@ -85,7 +102,7 @@ def get_domainInfo(url):
     global count
     try:
         url = check_url(url)
-        response = requests.get(url=url, headers=get_headers(url), timeout=5)
+        response = requests.get(url=url, headers=get_headers(url), timeout=5, verify=False)
         response.encoding = 'utf-8'
         result =  response.url+"    "+ str(response.status_code)+"    "+ str(get_pageTitle(response))
         # 在更新count的代码块前加锁
@@ -101,7 +118,7 @@ def get_domainInfo(url):
 
 
 
-
+#URL去重复
 visited_urls = []
 
 def get_domainInfo(url):
