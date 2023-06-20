@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding:utf-8 -*-
 
+from datetime import datetime
 from time import sleep
 import requests
 from bs4 import BeautifulSoup
@@ -52,6 +53,8 @@ def get_cve_info():
     sleep(2)
     cve_urls = get_cve_urls()
 
+    cve_count = 0
+
     for cve_url in cve_urls:
         response = requests.get(cve_url, headers=headers, timeout=60)
         response = response.text
@@ -65,8 +68,15 @@ def get_cve_info():
         print("[+] cve漏洞编号：", cve_id)
         print("[+] 漏洞介绍:", cve_description)
         
+        cve_count += 1
+        
         # 发送钉钉机器人通知
         send_dingtalk_notification(cve_id, cve_description, cve_url)
+
+    print(f"\n总共收到 {cve_count} 个CVE漏洞")
+    
+    # 发送今天CVE漏洞总数通知
+    send_cve_count_notification(cve_count)
 
 
 def send_dingtalk_notification(title, description, url):
@@ -75,6 +85,23 @@ def send_dingtalk_notification(title, description, url):
         "markdown": {
             "title": "CVE漏洞通知",
             "text": f"#### CVE漏洞通知\n\n- 漏洞编号：{title}\n- 漏洞介绍：{description}\n- 漏洞链接：[{url}]({url})"
+        }
+    }
+
+    response = requests.post(webhook_url, json=data)
+    if response.status_code == 200:
+        print('钉钉机器人通知发送成功')
+    else:
+        print('钉钉机器人通知发送失败')
+
+
+def send_cve_count_notification(cve_count):
+    today = datetime.now().strftime("%Y-%m-%d")
+    data = {
+        "msgtype": "markdown",
+        "markdown": {
+            "title": "CVE漏洞统计",
+            "text": f"#### CVE漏洞统计\n\n- 日期：{today}\n- 总共收到 {cve_count} 个CVE漏洞"
         }
     }
 
