@@ -73,7 +73,7 @@ def get_cve_info():
         # 发送钉钉机器人通知
         send_dingtalk_notification(cve_id, cve_description, cve_url)
 
-    print(f"\n总共收到 {cve_count} 个CVE漏洞")
+    print(f"\n报告老大今天共收到 {cve_count} 个CVE漏洞")
     
     # 发送今天CVE漏洞总数通知
     send_cve_count_notification(cve_count)
