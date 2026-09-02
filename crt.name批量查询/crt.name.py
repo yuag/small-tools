@@ -19,8 +19,9 @@ class CrtNameGUI:
         self.result_queue = queue.Queue()
         self.total_domains = 0
         self.finished_count = 0
-        self.auto_save_path = None          # 当前自动保存文件路径
-        self.all_results = []               # 完整结果缓存
+        self.auto_save_path = None
+        self.all_results = []          # GUI 显示用（带格式）
+        self.clean_results = []        # 纯子域名列表（保存用）
 
         self.create_widgets()
         self.poll_queue()
@@ -113,23 +114,21 @@ class CrtNameGUI:
         self.progress_var.set(0)
         self.status_label.config(text=f"0 / {self.total_domains}")
         self.all_results = []
+        self.clean_results = []
 
-        # 创建自动保存文件
+        # 创建自动保存文件（只写纯子域名）
         self.auto_save_path = None
         if self.auto_save_var.get():
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             filename = f"crt_name_results_{timestamp}.txt"
             self.auto_save_path = os.path.join(self.save_dir, filename)
-            with open(self.auto_save_path, "w", encoding="utf-8") as f:
-                f.write(f"crt.name 批量查询结果\n")
-                f.write(f"开始时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                f.write(f"域名数量: {self.total_domains}\n")
-                f.write("=" * 70 + "\n\n")
+            # 文件一开始为空，后续只追加纯子域名
 
         self.result_text.delete("1.0", tk.END)
         self.result_text.insert(tk.END, f"[*] 开始查询 {self.total_domains} 个域名，线程数: {self.thread_var.get()}\n")
         if self.auto_save_path:
             self.result_text.insert(tk.END, f"[*] 自动保存文件: {self.auto_save_path}\n")
+            self.result_text.insert(tk.END, f"[*] 保存格式：仅纯子域名（无装饰头）\n")
         self.result_text.insert(tk.END, "\n")
 
         threading.Thread(target=self.worker, args=(domains,), daemon=True).start()
@@ -149,7 +148,6 @@ class CrtNameGUI:
                 executor.submit(self.query_one, domain, use_json, use_dates): domain
                 for domain in domains
             }
-
             for future in as_completed(futures):
                 if not self.is_running:
                     break
@@ -189,7 +187,7 @@ class CrtNameGUI:
         raise Exception("重试失败")
 
     def append_to_file(self, text: str):
-        """实时追加写入自动保存文件"""
+        """实时追加写入自动保存文件（纯子域名）"""
         if self.auto_save_path:
             try:
                 with open(self.auto_save_path, "a", encoding="utf-8") as f:
@@ -204,6 +202,8 @@ class CrtNameGUI:
 
                 if msg_type == "ok":
                     self.finished_count += 1
+
+                    # ===== GUI 显示（带格式）=====
                     block = f"{'='*60}\n[+] {domain}\n{'-'*60}\n"
                     if data:
                         block += data + "\n\n"
@@ -213,7 +213,13 @@ class CrtNameGUI:
                     self.result_text.insert(tk.END, block)
                     self.result_text.see(tk.END)
                     self.all_results.append(block)
-                    self.append_to_file(block)          # 实时保存
+
+                    # ===== 纯子域名保存 =====
+                    if data:
+                        # 确保每行结尾有换行，方便后续追加
+                        clean = data.strip() + "\n"
+                        self.clean_results.append(clean)
+                        self.append_to_file(clean)
 
                 elif msg_type == "error":
                     self.finished_count += 1
@@ -221,7 +227,7 @@ class CrtNameGUI:
                     self.result_text.insert(tk.END, block)
                     self.result_text.see(tk.END)
                     self.all_results.append(block)
-                    self.append_to_file(block)
+                    # 错误信息不写入纯子域名文件
 
                 elif msg_type == "done":
                     self.is_running = False
@@ -233,10 +239,7 @@ class CrtNameGUI:
                     finish_msg = f"\n[*] 全部完成！共处理 {self.finished_count} 个域名\n"
                     if self.auto_save_path:
                         finish_msg += f"[*] 结果已自动保存到:\n{self.auto_save_path}\n"
-                        # 再写一次结束标记
-                        self.append_to_file(f"\n完成时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
-                        self.append_to_file(f"成功处理: {self.finished_count} 个域名\n")
-
+                        finish_msg += f"[*] 文件内容：仅纯子域名（每行一个）\n"
                     self.result_text.insert(tk.END, finish_msg)
                     self.result_text.see(tk.END)
                     break
@@ -248,24 +251,42 @@ class CrtNameGUI:
 
         except queue.Empty:
             pass
-
         self.root.after(100, self.poll_queue)
 
     def clear_result(self):
         self.result_text.delete("1.0", tk.END)
         self.all_results = []
+        self.clean_results = []
 
     def copy_result(self):
+        # 复制的是 GUI 里带格式的完整内容
         content = self.result_text.get("1.0", tk.END)
         self.root.clipboard_clear()
         self.root.clipboard_append(content)
         messagebox.showinfo("提示", "结果已复制到剪贴板")
 
     def export_result(self):
-        content = self.result_text.get("1.0", tk.END)
-        if not content.strip():
-            messagebox.showwarning("提示", "没有可导出的内容")
+        """手动导出：只导出纯子域名"""
+        if not self.clean_results:
+            # 如果还没有 clean_results，尝试从当前结果里提取
+            content = self.result_text.get("1.0", tk.END)
+            if not content.strip():
+                messagebox.showwarning("提示", "没有可导出的内容")
+                return
+            # 简单提取：只保留看起来像域名的行
+            lines = []
+            for line in content.splitlines():
+                line = line.strip()
+                if line and not line.startswith(("=", "[", "*", "-", "完成", "开始")):
+                    lines.append(line)
+            export_content = "\n".join(lines) + "\n" if lines else ""
+        else:
+            export_content = "".join(self.clean_results)
+
+        if not export_content.strip():
+            messagebox.showwarning("提示", "没有可导出的子域名")
             return
+
         path = filedialog.asksaveasfilename(
             defaultextension=".txt",
             filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
@@ -273,9 +294,8 @@ class CrtNameGUI:
         )
         if path:
             with open(path, "w", encoding="utf-8") as f:
-                f.write(content)
-            messagebox.showinfo("提示", f"已导出到:\n{path}")
-
+                f.write(export_content)
+            messagebox.showinfo("提示", f"已导出纯子域名到:\n{path}")
 
 if __name__ == "__main__":
     root = tk.Tk()
