@@ -3,7 +3,6 @@ import os
 import base64
 import csv
 import time
-import random
 import re
 import threading
 import queue
@@ -20,6 +19,8 @@ from tkinter import ttk, filedialog, messagebox
 FIELDS = "host,ip,port,domain,title,country,protocol,server"
 FINAL_CSV = "fofa_all_results.csv"
 DONE_FILE = "done.txt"
+RATE_LIMIT_KEYS = ("rate", "too fast", "too many", "限速", "速度太快", "频繁", "820003", "45012")
+QUOTA_KEYS = ("balance", "quota", "permission", "insufficient", "overdue", "fpoint", "coin", "额度", "次数用完")
 
 # ----------------------------------------------------------------------------
 # 后台扫描引擎 (逻辑核心)
@@ -37,6 +38,26 @@ class FofaScanEngine:
         self.done_set_mem = set()
         self.stats = {"total": 0, "skipped": 0, "empty": 0, "done": 0, "rows": 0}
         self._local = threading.local()
+        self.rate_lock = Lock()
+        self.rate_last = 0.0
+
+    def fofa_get(self, url):
+        """Serialize FOFA HTTP: one in-flight request, min interval between starts."""
+        interval = max(0.2, float(self.cfg.get("request_interval") or 1.2))
+        with self.rate_lock:
+            now = time.time()
+            wait = self.rate_last + interval - now
+            if wait > 0:
+                end = now + wait
+                while time.time() < end:
+                    if self.stop_event.is_set() or self.api_exhausted:
+                        return None
+                    time.sleep(min(0.2, max(0.0, end - time.time())))
+            if self.stop_event.is_set() or self.api_exhausted:
+                return None
+            resp = self.get_session().get(url, timeout=25)
+            self.rate_last = time.time()
+            return resp
 
     def log(self, msg):
         self.log_queue.put(("log", msg))
@@ -75,26 +96,31 @@ class FofaScanEngine:
             if self.stop_event.is_set() or self.api_exhausted:
                 return None
             try:
-                resp = self.get_session().get(url, timeout=25)
+                resp = self.fofa_get(url)
+                if resp is None:
+                    return None
                 if resp.status_code == 429:
-                    self.log(f"[!] 任务 {task_id} 被限速 (429)，等待 20 秒...")
-                    time.sleep(20)
+                    wait = 8.0 * attempt
+                    self.log(f"[!] 任务 {task_id} 被限速 (429)，等待 {wait:.0f} 秒...")
+                    time.sleep(wait)
                     continue
                 resp.raise_for_status()
                 data = resp.json()
 
-                # 关键打印所有错误
                 if data.get("error"):
                     errmsg = str(data.get("errmsg", "未知错误"))
+                    lower_msg = errmsg.lower()
+                    if any(k in lower_msg or k in errmsg for k in RATE_LIMIT_KEYS):
+                        wait = 8.0 * attempt
+                        self.log(f"[!] 任务 {task_id} FOFA 限速: {errmsg}，等待 {wait:.0f} 秒...")
+                        time.sleep(wait)
+                        continue
                     self.log(f"[!] API 返回错误 | 任务: {task_id}")
                     self.log(f"    查询语句: {q}")
                     self.log(f"    错误信息: {errmsg}")
-
-                    # 额度/权限类错误才彻底停止
-                    lower_msg = errmsg.lower()
-                    if any(k in lower_msg for k in ["balance", "quota", "permission", "insufficient", "overdue", "limit", "fpoint", "coin"]):
+                    if any(k in lower_msg or k in errmsg for k in QUOTA_KEYS):
                         self.log("\n" + "!" * 60)
-                        self.log(f"[!!!] 停止：API 额度已用尽或账号权限不足！")
+                        self.log("[!!!] 停止：API 额度已用尽或账号权限不足！")
                         self.log(f"[!!!] 最后的扫描任务: {task_id}")
                         self.log(f"[!!!] 最后的查询语句: {q}")
                         self.log(f"[!!!] 官方错误原因: {errmsg}")
@@ -107,7 +133,7 @@ class FofaScanEngine:
                 if attempt == self.cfg["max_retries"]:
                     self.log(f"[!] 任务 {task_id} 请求失败: {e}")
                     self.log(f"    查询语句: {q}")
-                time.sleep(2)
+                time.sleep(2 * attempt)
         return None
 
     def append_to_final_csv(self, rows):
@@ -157,7 +183,6 @@ class FofaScanEngine:
                 break
 
             page += 1
-            time.sleep(self.cfg["min_delay"] + random.random() * (self.cfg["max_delay"] - self.cfg["min_delay"]))
 
         if task_results:
             with self.file_lock:
@@ -214,7 +239,7 @@ class FofaScanEngine:
 
         pending = [t for t in tasks if t[3] not in self.done_set_mem]
         self.log(f"[*] 任务准备就绪。总组合: {len(tasks)}，待扫描: {len(pending)}")
-        self.log(f"[*] 当前 page_size = {self.cfg['page_size']}")
+        self.log(f"[*] page_size={self.cfg['page_size']}  并发={self.cfg['max_workers']}  请求间隔={self.cfg['request_interval']}s")
         self.report_progress(0, max(1, len(pending)))
 
         with ThreadPoolExecutor(max_workers=self.cfg["max_workers"]) as executor:
@@ -294,7 +319,15 @@ class FofaGUI:
         ttk.Label(f4, text="每页数量(page_size):").grid(row=0, column=0, padx=5, pady=5)
         self.page_size_var = tk.StringVar(value="100")   # 默认改成 100，更安全
         ttk.Entry(f4, textvariable=self.page_size_var, width=10).grid(row=0, column=1, padx=5, pady=5)
-        ttk.Label(f4, text="（建议先用100，账号权限高可改成1000/10000）").grid(row=0, column=2, padx=5)
+        ttk.Label(f4, text="（建议 100；权限高可 1000）").grid(row=0, column=2, padx=5, sticky="w")
+        ttk.Label(f4, text="并发线程:").grid(row=1, column=0, padx=5, pady=5)
+        self.workers_var = tk.StringVar(value="1")
+        ttk.Entry(f4, textvariable=self.workers_var, width=10).grid(row=1, column=1, padx=5, pady=5)
+        ttk.Label(f4, text="建议 1，最多 3（线程仍共用一把限速锁）").grid(row=1, column=2, padx=5, sticky="w")
+        ttk.Label(f4, text="请求间隔(秒):").grid(row=2, column=0, padx=5, pady=5)
+        self.interval_var = tk.StringVar(value="1.2")
+        ttk.Entry(f4, textvariable=self.interval_var, width=10).grid(row=2, column=1, padx=5, pady=5)
+        ttk.Label(f4, text="任意两次 FOFA 请求的最小间隔，默认 1.2").grid(row=2, column=2, padx=5, sticky="w")
 
         # 6. 按钮
         self.btn_start = ttk.Button(left, text="开始扫描", command=self._start)
@@ -321,8 +354,22 @@ class FofaGUI:
             page_size = int(self.page_size_var.get().strip())
             if page_size < 1 or page_size > 10000:
                 raise ValueError
-        except:
+        except Exception:
             messagebox.showwarning("提示", "page_size 必须是 1~10000 的整数")
+            return
+        try:
+            max_workers = int(self.workers_var.get().strip())
+            if max_workers < 1 or max_workers > 3:
+                raise ValueError
+        except Exception:
+            messagebox.showwarning("提示", "并发线程必须是 1~3 的整数")
+            return
+        try:
+            request_interval = float(self.interval_var.get().strip())
+            if request_interval < 0.2 or request_interval > 30:
+                raise ValueError
+        except Exception:
+            messagebox.showwarning("提示", "请求间隔必须是 0.2~30 秒")
             return
 
         cfg = {
@@ -334,10 +381,9 @@ class FofaGUI:
             "ports": parse("PORTS"),
             "asns": parse("ASNS"),
             "fixed_condition": fixed,
-            "max_workers": 5,
-            "min_delay": 1.5,
-            "max_delay": 2.5,
-            "max_retries": 2,
+            "max_workers": max_workers,
+            "request_interval": request_interval,
+            "max_retries": 3,
             "page_size": page_size
         }
         if not cfg["email"] or not cfg["key"]:
